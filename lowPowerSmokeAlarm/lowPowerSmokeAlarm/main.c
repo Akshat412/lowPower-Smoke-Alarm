@@ -1,3 +1,4 @@
+  
 /* AVR Low Power Smoke Alarm
  * Senses smoke values, activates buzzer for warning
  * Created: 20-06-2021 22:00:03
@@ -12,6 +13,10 @@
 #include <stdlib.h>
 
 #define SENSOR 0
+#define LED 1
+
+unsigned int digitalVal = 0; // 10-bit digital value of the MQ2 sensor
+char buffer[6]; // buffer to send to UART
 
 // sleep mode functions
 void powerDown_setup();
@@ -26,28 +31,77 @@ void UART_init();
 void UART_send(char letter);
 void UART_writeString(char *stringAdd);
 
+// misc functions
+void init_configure();
+void alarmTimer();
+
 int main(void) {
-    unsigned int digitalVal = 0; // 10-bit digital value of the MQ2 sensor
-    char buffer[6]; // buffer to send to UART
+	DDRB |= (1 << LED);
+	DDRD = (1 << 0);
+	PORTD = (1 << 0);
+	
 	UART_init(); // initialize UART
 	ADC_init(); // initialize ADC
 	
+	init_configure(); // make sure actual sensor readings lead to warnings
 	powerDown_setup(); // initialize powerDown
 	sei(); // enable global interrupts
 	
+	// device is to be deployed in clean air
+	// stay in permanent loop till the sensor reaches clean air levels (<400)
+	
     while (1) {
+		// main-loop: check ADC level every few minutes, go to sleep
 		digitalVal = ADC_read(); // read from ADC PC0
 		itoa(digitalVal, buffer, 10);
 		UART_writeString(buffer);
-		UART_send(13);
-		UART_send(10);
+		UART_send(13); // carriage return
+		UART_send(10); // new line
 		
 		_delay_ms(10); // mild delay for UART to work
+		
 		powerDown_watchDog(); // go to sleep
+		
+		if(ADC_read() > 600) {
+			// permanently go into alarm mode
+			while(1) {
+				for(int i = 0; i < 350; i++) {
+					alarmTimer();
+				}
+				PORTD &= ~(1 << 0);
+				_delay_ms(100);	
+			}
+		}
     }
 }
 
+void init_configure() {
+	// initial configuration to avoid a false alarm 
+	while(ADC_read() > 400) {
+		PORTB |= (1 << LED);
+		digitalVal = ADC_read(); // read from ADC PC0
+		itoa(digitalVal, buffer, 10);
+		UART_writeString(buffer);
+		UART_send(13); // carriage return
+		UART_send(10); // new line
+		
+		_delay_ms(100); // mild delay for UART to work
+	}
+	PORTB &= ~(1 << LED);
+}
+
+void alarmTimer() {
+	TCNT0 = 131;
+	TCCR0A = 0x00;
+	TCCR0B = 0x03;
+	while((TIFR0 & (1 << TOV0)) == 0);
+	TCCR0B = 0;
+	TIFR0 = (1 << TOV0);
+	PORTD ^= (1 << 0);
+}
+
 void powerDown_setup() {
+	// setup for sleep mode
 	SMCR |= (1 << SM1); // power-down mode
 	SMCR |= (1 << SE); // enable sleep
 	
@@ -57,8 +111,8 @@ void powerDown_setup() {
 }
 
 void powerDown_watchDog() {
-	// 2 minutes of sleep time, 120 = 4 * 30
-	for(unsigned char i = 0; i < 30; i++) {
+	// 2 minutes of sleep time, 60 = 4 * 15;
+	for(unsigned char i = 0; i < 15; i++) {
 		__asm__  __volatile__("sleep"); //in line assembler to go to sleep
 	}
 }
